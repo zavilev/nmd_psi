@@ -1,4 +1,4 @@
-# Code for ther paper "Estimation of splicing metrics for NMD-sensitive transcripts"
+# Code for the paper "Estimation of splicing metrics for NMD-sensitive transcripts"
 
 ## Jupyter notebooks
 
