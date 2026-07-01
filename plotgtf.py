@@ -1,274 +1,601 @@
-import pandas as pd
+from dataclasses import dataclass, field
+from collections import defaultdict
+
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
-from matplotlib.patches import Rectangle
+
+from matplotlib.patches import Rectangle, Arc
 
 
-def compress_introns(df, max_intron=200):
-    exons = df[df.Feature.isin(['exon','CDS'])].sort_values(['Start','End']).reset_index(drop=True)
-    result = []
-    offset = 0
-    prev_end = None
-    for i, row in exons.iterrows():
-        s,e = row.Start,row.End
-        if i == 0:
-            new_s = s
-            new_e = e
-        else:
-            intron = s - prev_end
-            displayed = min(intron, max_intron)
-            offset += intron - displayed
-            new_s = s - offset
-            new_e = e - offset
-        result.append((new_s, new_e))
-        prev_end = e
-    exons[['Start','End']] = pd.DataFrame(result,index=exons.index)
-    return exons
+# ============================================================
+# DATA MODEL
+# ============================================================
 
-def plot_transcripts(
-    gtf,
-    chrom=None,
-    start=None,
-    end=None,
-    gene_id=None,
-    collapse=False,
-    highlight=None,
-    figsize=(12, 0.6),
-    exon_height=0.22,
-    cds_height=0.45,
-    arrow_spacing=800,
-    default_color="steelblue",
-    ax=None,
-    resize_introns=None,
-):
-    """
-    Parameters
-    ----------
-    gtf : pandas.DataFrame
-        DataFrame из pyranges.read_gtf(...).df
+@dataclass(slots=True)
+class Transcript:
 
-    chrom, start, end : genomic interval
+    transcript_id: str
+    chrom: str
+    strand: str
 
-    gene_id : str
-        Вместо координат можно указать gene_id.
+    start: int
+    end: int
 
-    collapse : bool
-        Объединять одинаковые структуры транскриптов.
+    exons: list
+    cds: list
 
-    highlight : dict
-        {transcript_id: color}
+    collapsed_ids: list = field(default_factory=list)
 
-    Returns
-    -------
-    matplotlib Axes
-    """
+    @property
+    def cds_start(self):
+        if not self.cds:
+            return None
+        return min(x[0] for x in self.cds)
 
-    if highlight is None:
-        highlight = {}
+    @property
+    def cds_end(self):
+        if not self.cds:
+            return None
+        return max(x[1] for x in self.cds)
 
-    df = gtf.copy()
 
-    # ----------------------------------------------------
-    # Выбор области
-    # ----------------------------------------------------
-    if gene_id is not None:
-        g = df[df["gene_id"] == gene_id]
+# ============================================================
+# GTF PARSER
+# ============================================================
 
-        if len(g) == 0:
-            raise ValueError(f"gene_id '{gene_id}' not found")
+def transcripts_from_gtf(gtf):
 
-        chrom = g.iloc[0]["Chromosome"]
-        start = g["Start"].min()
-        end = g["End"].max()
+    transcripts = {}
 
-    if chrom is None:
-        raise ValueError("chrom must be specified")
+    for tid, tr in gtf.groupby("transcript_id"):
 
-    region = df[
-        (df["Chromosome"] == chrom)
-        & (df["End"] >= start)
-        & (df["Start"] <= end)
-    ].copy()
-
-    if isinstance(resize_introns,int):
-        region = compress_introns(region,resize_introns)
-        start = region["Start"].min()
-        end = region["End"].max()
-
-    transcripts = sorted(region["transcript_id"].dropna().unique())
-
-    # ----------------------------------------------------
-    # Собираем структуры транскриптов
-    # ----------------------------------------------------
-    models = []
-
-    for tx in transcripts:
-
-        tx_df = region[region["transcript_id"] == tx]
-
-        exons = tx_df[tx_df["Feature"] == "exon"][
-            ["Start", "End"]
-        ].sort_values("Start")
-
-        cds = tx_df[tx_df["Feature"] == "CDS"][
-            ["Start", "End"]
-        ].sort_values("Start")
-
-        strand = tx_df["Strand"].iloc[0]
-
-        color = highlight.get(tx, default_color)
-
-        exon_tuple = tuple(map(tuple, exons.values))
-        cds_tuple = tuple(map(tuple, cds.values))
-
-        models.append(
-            dict(
-                transcripts=[tx],
-                exons=exon_tuple,
-                cds=cds_tuple,
-                strand=strand,
-                color=color,
-            )
+        exons = (
+            tr[tr.type == "exon"]
+            .sort_values(["start", "end"])
+            [["start", "end"]]
+            .itertuples(index=False, name=None)
         )
 
-    # ----------------------------------------------------
-    # Collapse
-    # ----------------------------------------------------
-    if collapse:
-
-        groups = {}
-
-        for m in models:
-
-            key = (
-                m["exons"],
-                m["cds"],
-                m["strand"],
-                m["color"],  # важно для highlight
-            )
-
-            if key not in groups:
-                groups[key] = m.copy()
-            else:
-                groups[key]["transcripts"].extend(
-                    m["transcripts"]
-                )
-
-        models = list(groups.values())
-
-    # ----------------------------------------------------
-    # Figure
-    # ----------------------------------------------------
-    if ax is None:
-        fig_height = max(1.5, figsize[1] * len(models))
-        fig, ax = plt.subplots(
-            figsize=(figsize[0], fig_height)
+        cds = (
+            tr[tr.type == "CDS"]
+            .sort_values(["start", "end"])
+            [["start", "end"]]
+            .itertuples(index=False, name=None)
         )
 
-    # ----------------------------------------------------
-    # Рисование
-    # ----------------------------------------------------
-    y_positions = np.arange(len(models))[::-1]
+        transcripts[tid] = Transcript(
+            transcript_id=tid,
+            chrom=tr.chrn.iloc[0],
+            strand=tr.strand.iloc[0],
+            start=int(tr.start.min()),
+            end=int(tr.end.max()),
+            exons=list(exons),
+            cds=list(cds),
+        )
 
-    for y, model in zip(y_positions, models):
+    return transcripts
 
-        strand = model["strand"]
-        color = model["color"]
 
-        exon_centers = [
-            (s + e) / 2
-            for s, e in model["exons"]
+# ============================================================
+# COLLAPSE
+# ============================================================
+
+def transcript_signature(tr):
+
+    return (
+        tuple(tr.exons),
+        tuple(tr.cds),
+        (tr.start,tr.end)
+    )
+
+
+def collapse_transcripts(transcripts):
+
+    groups = defaultdict(list)
+
+    for tr in transcripts.values():
+        groups[transcript_signature(tr)].append(tr)
+
+    collapsed = []
+
+    for members in groups.values():
+
+        rep = members[0]
+
+        rep.collapsed_ids = [
+            m.transcript_id
+            for m in members
         ]
 
-        if len(exon_centers) > 1:
-            ax.plot(
-                [min(exon_centers), max(exon_centers)],
-                [y, y],
-                color=color,
-                lw=1,
-                zorder=1,
-            )
+        collapsed.append(rep)
 
-        # exon
-        for s, e in model["exons"]:
+    return collapsed
 
-            left = max(s, start)
-            right = min(e, end)
 
-            ax.add_patch(
-                Rectangle(
-                    (left, y - exon_height / 2),
-                    right - left,
-                    exon_height,
-                    facecolor=color,
-                    edgecolor="black",
-                    lw=0.5,
-                    zorder=2,
-                )
-            )
+# ============================================================
+# COORDINATE MAPPING
+# ============================================================
 
-        # CDS
-        for s, e in model["cds"]:
+@dataclass
+class CoordinateSegment:
 
-            left = max(s, start)
-            right = min(e, end)
+    start: int
+    end: int
 
-            ax.add_patch(
-                Rectangle(
-                    (left, y - cds_height / 2),
-                    right - left,
-                    cds_height,
-                    facecolor=color,
-                    edgecolor="black",
-                    lw=0.5,
-                    zorder=3,
-                )
-            )
+    display_start: float
+    display_end: float
 
-        # стрелки направления
-        xs = np.arange(start, end, arrow_spacing)
+    @property
+    def scale(self):
 
-        if strand == "-":
-            dx = -arrow_spacing * 0.25
-        else:
-            dx = arrow_spacing * 0.25
-
-        for x in xs:
-            ax.arrow(
-                x,
-                y,
-                dx,
-                0,
-                width=0.0,
-                head_width=0.08,
-                head_length=abs(dx) * 0.5,
-                length_includes_head=True,
-                color=color,
-                zorder=0,
-            )
-
-        label = ",".join(model["transcripts"])
-
-        ax.text(
-            start - (end - start) * 0.01,
-            y,
-            label,
-            ha="right",
-            va="center",
-            fontsize=8,
+        return (
+            self.display_end - self.display_start
+        ) / (
+            self.end - self.start
         )
 
-    # ----------------------------------------------------
-    # оформление
-    # ----------------------------------------------------
-    ax.set_xlim(start, end)
-    ax.set_ylim(-1, len(models))
 
-    ax.set_yticks([])
-    ax.set_xlabel(f"{chrom}:{start:,}-{end:,}")
+@dataclass
+class CoordinateMap:
 
-    ax.spines["left"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    ax.spines["top"].set_visible(False)
+    segments: list
 
-    return ax
+    def transform(self, x):
+
+        for seg in self.segments:
+
+            if seg.start <= x <= seg.end:
+
+                return (
+                    seg.display_start
+                    + (x - seg.start) * seg.scale
+                )
+
+        if x < self.segments[0].start:
+            return self.segments[0].display_start + x - self.segments[0].start
+
+        return self.segments[-1].display_end + x - self.segments[-1].end
+
+    def interval(self, start, end):
+
+        return (
+            self.transform(start),
+            self.transform(end)
+        )
+
+    @classmethod
+    def from_transcripts(
+        cls,
+        transcripts,
+        intron_size=50,
+    ):
+
+        exons = []
+
+        for tr in transcripts:
+            exons.extend(tr.exons)
+
+        boundaries = sorted(
+            set(
+                x
+                for exon in exons
+                for x in exon
+            )
+        )
+
+        intervals = []
+
+        for a, b in zip(
+            boundaries[:-1],
+            boundaries[1:]
+        ):
+            intervals.append((a, b))
+
+        position = 0
+
+        segments = []
+
+        for start, end in intervals:
+
+            exon_overlap = False
+
+            for ex1, ex2 in exons:
+
+                if ex1 < end and ex2 > start:
+                    exon_overlap = True
+                    break
+
+            length = end - start
+
+            if exon_overlap:
+                display_length = length
+            else:
+                display_length = min(
+                    intron_size,
+                    length
+                )
+
+            segments.append(
+                CoordinateSegment(
+                    start,
+                    end,
+                    position,
+                    position + display_length
+                )
+            )
+
+            position += display_length
+
+        return cls(segments)
+
+
+# ============================================================
+# LAYOUT
+# ============================================================
+
+def compute_layout(transcripts):
+
+    return {
+        tr.transcript_id: i
+        for i, tr in enumerate(
+            reversed(transcripts)
+        )
+    }
+
+
+# ============================================================
+# COLORS
+# ============================================================
+
+def make_color_dict(
+    highlight=None,
+    default="black",
+    cmap="tab10",
+):
+
+    if highlight is None:
+        return defaultdict(lambda: default)
+
+    cm = plt.get_cmap(cmap)
+
+    colors = {}
+
+    for k, v in highlight.items():
+
+        if isinstance(v, int):
+            colors[k] = cm(v)
+        else:
+            colors[k] = v
+
+    return defaultdict(
+        lambda: default,
+        colors
+    )
+
+
+# ============================================================
+# DRAWING
+# ============================================================
+
+
+
+def draw_introns(
+    ax,
+    tr,
+    y,
+    mapper=None,
+    color="black",
+):
+    if mapper:
+        start,end = mapper.transform(tr.start),mapper.transform(tr.end)
+    else:
+        start,end = tr.start,tr.end
+
+    ax.plot(
+        [start,end],
+        [y, y],
+        lw=1,
+        color=color,
+        zorder=1,
+    )
+
+
+def draw_exons(
+    ax,
+    tr,
+    y,
+    mapper=None,
+    color="black",
+):
+
+    exons = tr.exons
+
+    if mapper:
+        exons = [
+            mapper.interval(a, b)
+            for a, b in exons
+        ]
+
+    for a, b in exons:
+
+        ax.add_patch(
+            Rectangle(
+                (a, y - 0.12),
+                b - a,
+                0.24,
+                color=color,
+                zorder=2,
+            )
+        )
+
+
+def draw_cds(
+    ax,
+    tr,
+    y,
+    mapper=None,
+    color="black",
+):
+
+    cds = tr.cds
+
+    if mapper:
+        cds = [
+            mapper.interval(a, b)
+            for a, b in cds
+        ]
+
+    for a, b in cds:
+
+        ax.add_patch(
+            Rectangle(
+                (a, y - 0.22),
+                b - a,
+                0.44,
+                color=color,
+                zorder=3,
+            )
+        )
+
+
+def draw_arrows(
+    ax,
+    tr,
+    y,
+    mapper=None,
+    n=20,
+    s=20,
+    fixed_strand=False
+):
+
+    start = tr.start
+    end = tr.end
+
+    if mapper:
+        start = mapper.transform(start)
+        end = mapper.transform(end)
+
+    xs = np.linspace(start, end, n)
+
+    marker = ">" if (tr.strand == "+") or fixed_strand else "<"
+
+    ax.scatter(
+        xs,
+        [y] * len(xs),
+        marker=f"${marker}$",
+        color="gray",
+        s=s,
+        zorder=0,
+    )
+
+
+# ============================================================
+# COVERAGE
+# ============================================================
+
+def draw_coverage(
+    ax,
+    coverage,
+    mapper=None,
+    color="gray",
+):
+
+    if coverage is None:
+        return
+
+    x = coverage[['start','end']].to_numpy().flatten()
+    y = coverage[['coverage','coverage']].to_numpy().flatten()
+
+    if mapper:
+
+        x = np.array([
+            mapper.transform(i)
+            for i in x
+        ])
+
+    ax.fill_between(x,y,color=color,lw=0)
+
+
+
+
+# ============================================================
+# JUNCTIONS
+# ============================================================
+
+def draw_junctions(
+    ax,
+    junctions,
+    mapper=None,
+    color="black",
+):
+
+    if junctions is None:
+        return
+
+    for row in junctions.itertuples():
+
+        s = row.start
+        e = row.end
+
+        if mapper:
+            s = mapper.transform(s)
+            e = mapper.transform(e)
+
+        width = e - s
+
+        patch = Arc(
+            ((s + e) / 2, 0),
+            width,
+            width / 2,
+            theta1=0,
+            theta2=180,
+            lw=2,
+            color=color,
+        )
+
+        ax.add_patch(patch)
+
+
+# ============================================================
+# MAIN API
+# ============================================================
+
+def plot_gene(
+    gtf,
+    collapse=True,
+    shrink=True,
+    intron_size='rel',
+    rel_length = 0.5,
+    highlight=None,
+    figsize=(12, 6),
+    ax=None,
+    arrows=True,
+    arrow_kwargs=None,
+    max_tr=np.inf,
+):
+    if intron_size=='rel':
+        aa = gtf[gtf.type=='exon']
+        intron_size = int((aa.end-aa.start).median()*rel_length)
+
+    transcripts = list(
+        transcripts_from_gtf(gtf).values()
+    )
+
+    if collapse:
+
+        transcripts = collapse_transcripts(
+            {
+                t.transcript_id: t
+                for t in transcripts
+            }
+        )
+
+    mapper = None
+
+    if shrink:
+
+        mapper = CoordinateMap.from_transcripts(
+            transcripts,
+            intron_size=intron_size,
+        )
+
+    layout = compute_layout(transcripts)
+
+    colors = make_color_dict(highlight)
+
+    if ax is None:
+        fig, ax = plt.subplots(
+            figsize=figsize
+        )
+
+    for tr in transcripts:
+
+        y = layout[tr.transcript_id]
+
+        color = colors[tr.transcript_id]
+
+        draw_introns(
+            ax,
+            tr,
+            y,
+            mapper,
+            color,
+        )
+
+        draw_exons(
+            ax,
+            tr,
+            y,
+            mapper,
+            color,
+        )
+
+        draw_cds(
+            ax,
+            tr,
+            y,
+            mapper,
+            color,
+        )
+
+        if arrows:
+            kws = dict() if arrow_kwargs is None else arrow_kwargs
+            draw_arrows(
+                ax,
+                tr,
+                y,
+                mapper,
+                **kws,
+            )
+
+    ax.set_yticks(
+        list(layout.values())
+    )
+
+    labels = []
+
+    for tr in transcripts:
+
+        if tr.collapsed_ids:
+            if max_tr<len(tr.collapsed_ids):
+                label = ",".join(tr.collapsed_ids[:max_tr])+f'..+{len(tr.collapsed_ids)-max_tr}'
+            else:
+                label = ",".join(tr.collapsed_ids)
+        else:
+            label = tr.transcript_id
+        labels.append(
+            label
+        )
+
+    ax.set_yticklabels(
+        reversed(labels)
+    )
+
+    ax.set_ylim(
+        -1,
+        len(layout)
+    )
+
+    return ax, mapper
+
+
+
+######
+# MISC
+######
+import io
+import subprocess
+
+def read_shell(command, **kwargs):
+    proc = subprocess.Popen(command, 
+                            shell=True,
+                            stdout=subprocess.PIPE, 
+                            stderr=subprocess.PIPE)
+    output, error = proc.communicate()
+
+    if proc.returncode == 0:
+        with io.StringIO(output.decode()) as buffer:
+            return pd.read_table(buffer, **kwargs)
+    else:
+        raise Exception(error.decode())
