@@ -48,7 +48,7 @@ def transcripts_from_gtf(gtf):
 
     transcripts = {}
 
-    for tid, tr in gtf.groupby("transcript_id"):
+    for tid, tr in gtf.groupby("transcript_id",sort=False):
 
         exons = (
             tr[tr.type == "exon"]

@@ -131,7 +131,7 @@ def deriv0(df,thr=0.05):
     return slope
 def get_gamma(df,ax=None,plot=True,
               funcs=['linear','loglinear','nonlinear','nonlinear_rel','deriv0'],
-              deriv0_thr = 0.05, linear_thr=0.01):
+              deriv0_thr = 0.05, linear_thr=0.01, cmap=None):
     d = {'linear':linear,'loglinear':loglinear,
          'nonlinear':nonlinear,'nonlinear_rel':nonlinear_rel,'deriv0':deriv0}
     ls = ['-','--',':','-.']
@@ -147,13 +147,16 @@ def get_gamma(df,ax=None,plot=True,
             resd[funcname] = d['deriv0'](df,thr=deriv0_thr)
         else:
             resd[funcname] = d[funcname](df)
+    if cmap is None:
+        cmap = plt.get_cmap('tab10_r')
+        cmap = [cmap(i) for i in range(len(funcs))]
     if plot:
         for i,(funcname,gamma) in enumerate(resd.items()):
             y =  psi2r(x,gamma)
             style = ls[i%len(ls)]
 #            ax.plot(x,y,label=f'{funcname}: {gamma:.1f}',ls=style,
 #                    path_effects=[pe.Stroke(linewidth=3, foreground='white',alpha=0.8), pe.Normal()])
-            ax.plot(x,y,label=f'{funcname}: {gamma:.1f}', lw=2)
+            ax.plot(x,y,label=f'{funcname}: {gamma:.1f}', lw=2, c=cmap[i])
         ax.legend()
         return resd,ax
     return resd
@@ -164,3 +167,92 @@ def compute_weights(x_source, x_target):
     
     weights = kde_target(x_source) / kde_source(x_source)
     return weights
+
+
+import matplotlib.transforms as transforms
+
+def add_n(ylabels, ax, data, x, y, orient, hue=None, hue_order=None, pad=0.12, fontsize=8):
+
+    if orient == 'h':
+        cat = y
+    elif orient == 'v':
+        cat = x
+    else:
+        raise ValueError("orient must be 'h' or 'v'")
+
+    cols = [cat] + ([hue] if hue is not None else [])
+    counts = data[cols].copy()
+    counts[cat] = counts[cat].astype(str)
+
+    if hue is not None:
+        counts = counts.groupby([cat, hue]).size()
+
+        nh = len(hue_order)
+        width = 0.8 / nh
+        offsets = (np.arange(nh) - (nh - 1) / 2) * width
+    else:
+        counts = counts.groupby(cat).size()
+        offsets = [0]
+
+    # Расширяем область под n=...
+    if orient == 'h':
+        xmin, xmax = ax.get_xlim()
+        dx = xmax - xmin
+        ax.set_xlim(xmin - pad * dx, xmax)
+
+        trans = transforms.blended_transform_factory(
+            ax.transAxes, ax.transData
+        )
+    else:
+        ymin, ymax = ax.get_ylim()
+        dy = ymax - ymin
+        ax.set_ylim(ymin - pad * dy, ymax)
+
+        trans = transforms.blended_transform_factory(
+            ax.transData, ax.transAxes
+        )
+
+    for i, label in enumerate(ylabels):
+
+        if hue is None:
+
+            n = counts.get(label, 0)
+
+            if n == 0:
+                continue
+
+            if orient == 'h':
+                ax.text(
+                    0.005, i, f'n={n}',
+                    ha='left', va='center',
+                    fontsize=fontsize, transform=trans
+                )
+            else:
+                ax.text(
+                    i, 0.005, f'n={n}',
+                    ha='center', va='bottom',
+                    fontsize=fontsize, transform=trans
+                )
+
+        else:
+
+            for j, h in enumerate(hue_order):
+
+                n = counts.get((label, h), 0)
+
+                if n == 0:
+                    continue
+
+                if orient == 'h':
+                    ax.text(
+                        0.005, i + offsets[j], f'n={n}',
+                        ha='left', va='center',
+                        fontsize=fontsize, transform=trans
+                    )
+                else:
+                    ax.text(
+                        i + offsets[j], 0.005, f'n={n}',
+                        ha='center', va='bottom',
+                        fontsize=fontsize, transform=trans
+                    )
+

@@ -255,12 +255,12 @@ def plot_model(x,params,prob,ax=None):
     xl = ax.get_xlim()
     yl = ax.get_ylim()
     cbar = plt.colorbar(im,ax=ax)
-    cbar.ax.set_title("$P_R$")
+    cbar.ax.set_title("$P_S$")
     x = np.linspace(0,1,200)
     y0 =  psi2r(x,a0_hat)
     y1 =  psi2r(x,a1_hat)
-    gamma_r = r'$\gamma_{R}$'
-    gamma_nr = r'$\gamma_{NR}$'
+    gamma_r = r'$\gamma_{S}$'
+    gamma_nr = r'$\gamma_{E}$'
     ax.plot(x,y1,label=f'{gamma_r}: {a1_hat:.2f}',ls='-',
             path_effects=[pe.Stroke(linewidth=3, foreground='white',alpha=0.8), pe.Normal()])
     ax.plot(x,y0,label=f'{gamma_nr}: {a0_hat:.2f}',ls='--',

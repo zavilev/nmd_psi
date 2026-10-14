@@ -3,6 +3,7 @@ setlocal
 
 call "%USERPROFILE%\miniconda3\Scripts\activate.bat" py310
 
+
 echo ==========================================
 echo Running: all_nmd_inactivation_data.ipynb
 echo ==========================================
@@ -25,6 +26,12 @@ echo ==========================================
 echo Running: encode_qc.ipynb
 echo ==========================================
 jupyter nbconvert --to notebook --execute "encode_qc.ipynb" --inplace --ExecutePreprocessor.kernel_name=python3
+if errorlevel 1 goto :error
+
+echo ==========================================
+echo Running: RF_NMD_features.ipynb
+echo ==========================================
+jupyter nbconvert --to notebook --execute "RF_NMD_features.ipynb" --inplace --ExecutePreprocessor.kernel_name=python3
 if errorlevel 1 goto :error
 
 echo ==========================================
